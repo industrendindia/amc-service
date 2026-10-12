@@ -1,0 +1,2 @@
+package in.sevasetu.amc;import com.fasterxml.jackson.databind.ObjectMapper;import in.sevasetu.amc.security.*;import org.junit.jupiter.api.Test;import java.util.UUID;import static org.assertj.core.api.Assertions.assertThat;
+class TokenServiceTest{@Test void roundTrip(){var s=new TokenService("a-secure-test-secret-that-is-long-enough",1,new ObjectMapper());var u=new CurrentUser(UUID.randomUUID(),UUID.randomUUID(),"owner","Owner","OWNER");assertThat(s.verify(s.issue(u))).isEqualTo(u);}}

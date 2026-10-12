@@ -1,0 +1,21 @@
+spring:
+  application.name: amc-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/amcservice}
+    username: ${DB_USERNAME:amcservice}
+    password: ${DB_PASSWORD:change-me}
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    schemas: amcservice
+    default-schema: amcservice
+  jackson:
+    default-property-inclusion: non_null
+server:
+  port: ${PORT:8080}
+  forward-headers-strategy: framework
+management.endpoints.web.exposure.include: health,info
+app:
+  jwt-secret: ${JWT_SECRET:local-development-secret-change-before-production-12345}
+  jwt-hours: 12
+  notification-cron: ${NOTIFICATION_CRON:0 15 8 * * *}
