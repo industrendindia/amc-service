@@ -18,7 +18,7 @@ import java.util.*;
 public class OrderController {
  private final JdbcClient db; public OrderController(JdbcClient db){this.db=db;}
  public record Line(@NotNull UUID catalogItemId,@Min(1) int quantity,@DecimalMin("0") BigDecimal discount){}
- public record Create(@NotNull UUID customerId,@NotEmpty List<@Valid Line> items,@Pattern(regexp="UPI|CASH|ZERO|PENDING") String paymentMethod,Instant dueAt){}
+ public record Create(@NotNull UUID customerId,@NotEmpty List<@Valid Line> items,@Pattern(regexp="UPI|CASH|ZERO|PENDING") String paymentMethod,@DecimalMin("0") BigDecimal initialPaymentAmount,Instant dueAt){}
  public record Created(UUID id,String billNumber,BigDecimal total){}
  public record Payment(@NotNull @DecimalMin(value="0",inclusive=false) BigDecimal amount,@Pattern(regexp="UPI|CASH") String method,String referenceNumber){}
  public record PageResult(List<Map<String,Object>> content,int page,int size,long totalElements,int totalPages){}
@@ -36,14 +36,17 @@ public class OrderController {
   var subtotal=priced.stream().map(p->p.price().multiply(BigDecimal.valueOf(p.qty()))).reduce(BigDecimal.ZERO,BigDecimal::add);
   var discount=priced.stream().map(p->p.discount().multiply(BigDecimal.valueOf(p.qty()))).reduce(BigDecimal.ZERO,BigDecimal::add);
   var total="ZERO".equals(req.paymentMethod())?BigDecimal.ZERO:subtotal.subtract(discount).max(BigDecimal.ZERO);
-  var paid="PENDING".equals(req.paymentMethod())?BigDecimal.ZERO:total; var paymentStatus="PENDING".equals(req.paymentMethod())?"PENDING":"PAID";
+  var paid="PENDING".equals(req.paymentMethod())||"ZERO".equals(req.paymentMethod())?BigDecimal.ZERO:(req.initialPaymentAmount()==null?total:req.initialPaymentAmount());
+  if(paid.compareTo(total)>0)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Initial payment cannot exceed the bill total");
+  var paymentStatus=total.signum()==0||paid.compareTo(total)==0?"PAID":paid.signum()>0?"PARTIAL":"PENDING";
+  var storedMethod=paid.signum()==0&&total.signum()>0?"PENDING":req.paymentMethod();
+  var branchId=u.branchId()!=null?u.branchId():db.sql("select id from amcservice.branches where tenant_id=:t and active order by created_at limit 1").param("t",u.tenantId()).query(UUID.class).optional().orElseThrow(()->new ResponseStatusException(HttpStatus.BAD_REQUEST,"Configure an active branch before creating an order"));
   var orderId=UUID.randomUUID(); var bill="AMC-"+LocalDate.now().getYear()+"-"+db.sql("select nextval('amcservice.bill_number_seq')").query(Long.class).single();
-  db.sql("insert into amcservice.orders(id,tenant_id,branch_id,customer_id,bill_number,subtotal,discount,total,payment_method,created_by,due_at,payment_status,amount_paid) values(:id,:t,(select branch_id from amcservice.users where id=:user),:c,:bill,:sub,:disc,:total,:method,:user,:due,:ps,:paid)").param("id",orderId).param("t",u.tenantId()).param("c",req.customerId()).param("bill",bill).param("sub",subtotal).param("disc",discount).param("total",total).param("method",req.paymentMethod()).param("user",u.userId()).param("due",req.dueAt()).param("ps",paymentStatus).param("paid",paid).update();
+  db.sql("insert into amcservice.orders(id,tenant_id,branch_id,customer_id,bill_number,subtotal,discount,total,payment_method,created_by,due_at,payment_status,amount_paid) values(:id,:t,:branch,:c,:bill,:sub,:disc,:total,:method,:user,:due,:ps,:paid)").param("id",orderId).param("t",u.tenantId()).param("branch",branchId).param("c",req.customerId()).param("bill",bill).param("sub",subtotal).param("disc",discount).param("total",total).param("method",storedMethod).param("user",u.userId()).param("due",req.dueAt()).param("ps",paymentStatus).param("paid",paid).update();
   for(var p:priced)db.sql("insert into amcservice.order_items(id,order_id,item_kind,item_id,description,unit_price,quantity,discount,duration_months,service_expires_on) values(:id,:order,:kind,:item,:name,:price,:qty,:discount,:months,:expiry)").param("id",UUID.randomUUID()).param("order",orderId).param("kind",p.kind()).param("item",p.id()).param("name",p.name()).param("price",p.price()).param("qty",p.qty()).param("discount",p.discount()).param("months",p.months()).param("expiry",p.months()==null?null:LocalDate.now().plusMonths(p.months())).update();
-  if(!"PENDING".equals(req.paymentMethod()))addPayment(orderId,u,paid,req.paymentMethod(),null);
+  if(paid.signum()>0||total.signum()==0)addPayment(orderId,u,paid,"ZERO".equals(req.paymentMethod())?"ZERO":req.paymentMethod(),null);
   db.sql("update amcservice.customers set lifetime_value=lifetime_value+:total where id=:id and tenant_id=:t").param("total",total).param("id",req.customerId()).param("t",u.tenantId()).update();
-  var domain=db.sql("select domain from amcservice.tenants where id=:t").param("t",u.tenantId()).query(String.class).single();
-  if("BAKERY".equals(domain)&&u.branchId()!=null)db.sql("insert into amcservice.job_cards(id,tenant_id,branch_id,order_id,title,notes,due_at,priority,status,created_by) values(:id,:t,:b,:o,:title,:notes,:due,'NORMAL','OPEN',:u)").param("id",UUID.randomUUID()).param("t",u.tenantId()).param("b",u.branchId()).param("o",orderId).param("title","Prepare "+bill+" for "+customer).param("notes","Automatically created from the customer order").param("due",req.dueAt()).param("u",u.userId()).update();
+  db.sql("insert into amcservice.job_cards(id,tenant_id,branch_id,order_id,title,notes,due_at,priority,status,created_by) values(:id,:t,:b,:o,:title,:notes,:due,'NORMAL','OPEN',:u)").param("id",UUID.randomUUID()).param("t",u.tenantId()).param("b",branchId).param("o",orderId).param("title","Prepare "+bill+" for "+customer).param("notes","Automatically created from the customer order").param("due",req.dueAt()).param("u",u.userId()).update();
   return new Created(orderId,bill,total);
  }
 
