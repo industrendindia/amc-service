@@ -23,6 +23,7 @@ public class OrderController {
  public record Payment(@NotNull @DecimalMin(value="0",inclusive=false) BigDecimal amount,@Pattern(regexp="UPI|CASH") String method,String referenceNumber){}
  public record PageResult(List<Map<String,Object>> content,int page,int size,long totalElements,int totalPages){}
  private record Priced(UUID id,String kind,String name,BigDecimal price,Integer months,int qty,BigDecimal discount){}
+ private record DocumentConfig(String domainPrefix,String shopCode,String branchCode){}
 
  @PostMapping @ResponseStatus(HttpStatus.CREATED) @Transactional
  Created create(@AuthenticationPrincipal CurrentUser u,@Valid @RequestBody Create req){
@@ -41,12 +42,14 @@ public class OrderController {
   var paymentStatus=total.signum()==0||paid.compareTo(total)==0?"PAID":paid.signum()>0?"PARTIAL":"PENDING";
   var storedMethod=paid.signum()==0&&total.signum()>0?"PENDING":req.paymentMethod();
   var branchId=u.branchId()!=null?u.branchId():db.sql("select id from amcservice.branches where tenant_id=:t and active order by created_at limit 1").param("t",u.tenantId()).query(UUID.class).optional().orElseThrow(()->new ResponseStatusException(HttpStatus.BAD_REQUEST,"Configure an active branch before creating an order"));
-  var orderId=UUID.randomUUID(); var bill="AMC-"+LocalDate.now().getYear()+"-"+db.sql("select nextval('amcservice.bill_number_seq')").query(Long.class).single();
+  var documentConfig=db.sql("select t.domain_prefix,t.document_code shop_code,b.document_code branch_code from amcservice.tenants t join amcservice.branches b on b.tenant_id=t.id where t.id=:t and b.id=:b").param("t",u.tenantId()).param("b",branchId).query(DocumentConfig.class).single();
+  var orderId=UUID.randomUUID(); var documentNumber=db.sql("select nextval('amcservice.business_document_number_seq')").query(Long.class).single(); var bill=documentConfig.domainPrefix()+"-"+documentConfig.shopCode()+documentConfig.branchCode()+"-"+String.format("%06d",documentNumber);
   db.sql("insert into amcservice.orders(id,tenant_id,branch_id,customer_id,bill_number,subtotal,discount,total,payment_method,created_by,due_at,payment_status,amount_paid) values(:id,:t,:branch,:c,:bill,:sub,:disc,:total,:method,:user,:due,:ps,:paid)").param("id",orderId).param("t",u.tenantId()).param("branch",branchId).param("c",req.customerId()).param("bill",bill).param("sub",subtotal).param("disc",discount).param("total",total).param("method",storedMethod).param("user",u.userId()).param("due",req.dueAt()).param("ps",paymentStatus).param("paid",paid).update();
   for(var p:priced)db.sql("insert into amcservice.order_items(id,order_id,item_kind,item_id,description,unit_price,quantity,discount,duration_months,service_expires_on) values(:id,:order,:kind,:item,:name,:price,:qty,:discount,:months,:expiry)").param("id",UUID.randomUUID()).param("order",orderId).param("kind",p.kind()).param("item",p.id()).param("name",p.name()).param("price",p.price()).param("qty",p.qty()).param("discount",p.discount()).param("months",p.months()).param("expiry",p.months()==null?null:LocalDate.now().plusMonths(p.months())).update();
   if(paid.signum()>0||total.signum()==0)addPayment(orderId,u,paid,"ZERO".equals(req.paymentMethod())?"ZERO":req.paymentMethod(),null);
   db.sql("update amcservice.customers set lifetime_value=lifetime_value+:total where id=:id and tenant_id=:t").param("total",total).param("id",req.customerId()).param("t",u.tenantId()).update();
-  db.sql("insert into amcservice.job_cards(id,tenant_id,branch_id,order_id,title,notes,due_at,priority,status,created_by) values(:id,:t,:b,:o,:title,:notes,:due,'NORMAL','OPEN',:u)").param("id",UUID.randomUUID()).param("t",u.tenantId()).param("b",branchId).param("o",orderId).param("title","Prepare "+bill+" for "+customer).param("notes","Automatically created from the customer order").param("due",req.dueAt()).param("u",u.userId()).update();
+  var jobNumber=documentConfig.domainPrefix()+"-"+documentConfig.shopCode()+documentConfig.branchCode()+"-J-"+String.format("%06d",db.sql("select nextval('amcservice.business_document_number_seq')").query(Long.class).single());
+  db.sql("insert into amcservice.job_cards(id,tenant_id,branch_id,order_id,job_number,title,notes,due_at,priority,status,created_by) values(:id,:t,:b,:o,:job,:title,:notes,:due,'NORMAL','OPEN',:u)").param("id",UUID.randomUUID()).param("t",u.tenantId()).param("b",branchId).param("o",orderId).param("job",jobNumber).param("title","Prepare "+bill+" for "+customer).param("notes","Automatically created from the customer order").param("due",req.dueAt()).param("u",u.userId()).update();
   return new Created(orderId,bill,total);
  }
 
