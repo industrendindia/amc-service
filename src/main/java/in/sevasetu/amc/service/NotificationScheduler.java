@@ -11,4 +11,15 @@ import org.springframework.jdbc.core.simple.JdbcClient;import org.springframewor
  select gen_random_uuid(),o.tenant_id,o.customer_id,oi.id,'EXPIRY',now(),concat(oi.description,' expires on ',oi.service_expires_on),concat(o.tenant_id,':expiry:',oi.id)
  from amcservice.order_items oi join amcservice.orders o on o.id=oi.order_id where oi.service_expires_on between current_date and current_date+interval '30 days'
  on conflict(idempotency_key) do nothing
+ """).update();db.sql("""
+ insert into amcservice.notification_jobs(id,tenant_id,customer_id,kind,scheduled_for,message,idempotency_key)
+ select gen_random_uuid(),x.tenant_id,x.customer_id,'PURCHASE_REMINDER',now(),
+        concat('It has nearly been a year since your purchase on ',x.last_purchase::date),
+        concat(x.tenant_id,':purchase-reminder:',x.customer_id,':',extract(year from current_date))
+ from (
+   select o.tenant_id,o.customer_id,max(o.created_at) last_purchase,s.purchase_reminder_days
+   from amcservice.orders o join amcservice.tenant_automation_settings s on s.tenant_id=o.tenant_id and s.automatic_notifications
+   group by o.tenant_id,o.customer_id,s.purchase_reminder_days
+ ) x where (x.last_purchase::date+interval '1 year')::date=current_date+x.purchase_reminder_days
+ on conflict(idempotency_key) do nothing
  """).update();}}
