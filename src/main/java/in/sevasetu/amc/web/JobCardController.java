@@ -17,14 +17,16 @@ public class JobCardController {
  private final JdbcClient db; public JobCardController(JdbcClient db){this.db=db;}
  public record Assign(@NotNull List<UUID> employeeIds){}
  public record Note(@NotBlank @Size(max=4000) String note){}
- public record PageResult(List<Map<String,Object>> content,int page,int size,long totalElements,int totalPages){}
+ public record PageResult(List<Map<String,Object>> content,int page,int size,long totalElements,int totalPages,Map<String,Long> statusCounts){}
 
- @GetMapping PageResult list(@AuthenticationPrincipal CurrentUser u,@RequestParam(defaultValue="0") @Min(0) int page){
+ @GetMapping PageResult list(@AuthenticationPrincipal CurrentUser u,@RequestParam(defaultValue="0") @Min(0) int page,@RequestParam(defaultValue="") String status){
   CustomerController.tenant(u);
-  var size=5;var total=db.sql("select count(*) from amcservice.job_cards where tenant_id=:t").param("t",u.tenantId()).query(Long.class).single();
-  var rows=db.sql("select j.id,j.job_number,j.branch_id,b.name branch_name,j.order_id,o.bill_number,j.title,j.notes,j.due_at,j.priority,j.status,j.created_at,c.name customer_name,c.phone customer_phone,(select count(*) from amcservice.order_reference_images i where i.order_id=j.order_id) reference_image_count,coalesce((select string_agg(e.name,', ' order by e.name) from amcservice.job_card_chefs jc join amcservice.employees e on e.id=jc.employee_id where jc.job_card_id=j.id),'') chef_names from amcservice.job_cards j join amcservice.branches b on b.id=j.branch_id left join amcservice.orders o on o.id=j.order_id left join amcservice.customers c on c.id=o.customer_id where j.tenant_id=:t order by case j.status when 'IN_PROGRESS' then 1 when 'ASSIGNED' then 2 when 'OPEN' then 3 else 4 end,j.due_at nulls last,j.created_at desc limit :size offset :offset")
+  var filter=switch(status){case "OPEN"->" and j.status='OPEN'";case "ASSIGNED"->" and j.status='ASSIGNED'";case "IN_PROGRESS"->" and j.status in ('IN_PROGRESS','READY')";case "COMPLETED"->" and j.status='COMPLETED'";default->"";};
+  var size=5;var total=db.sql("select count(*) from amcservice.job_cards j where j.tenant_id=:t"+filter).param("t",u.tenantId()).query(Long.class).single();
+  var rows=db.sql("select j.id,j.job_number,j.branch_id,b.name branch_name,j.order_id,o.bill_number,j.title,j.notes,j.due_at,j.priority,j.status,j.created_at,c.name customer_name,c.phone customer_phone,(select count(*) from amcservice.order_reference_images i where i.order_id=j.order_id) reference_image_count,coalesce((select string_agg(e.name,', ' order by e.name) from amcservice.job_card_chefs jc join amcservice.employees e on e.id=jc.employee_id where jc.job_card_id=j.id),'') chef_names from amcservice.job_cards j join amcservice.branches b on b.id=j.branch_id left join amcservice.orders o on o.id=j.order_id left join amcservice.customers c on c.id=o.customer_id where j.tenant_id=:t"+filter+" order by j.due_at nulls last,j.created_at desc limit :size offset :offset")
    .param("t",u.tenantId()).param("size",size).param("offset",page*size).query().listOfRows();
-  return new PageResult(rows,page,size,total,(int)Math.ceil((double)total/size));
+  var counts=new LinkedHashMap<String,Long>();db.sql("select case when status='READY' then 'IN_PROGRESS' else status end bucket,count(*) total from amcservice.job_cards where tenant_id=:t and status in ('OPEN','ASSIGNED','IN_PROGRESS','READY','COMPLETED') group by bucket").param("t",u.tenantId()).query().listOfRows().forEach(r->counts.put(String.valueOf(r.get("bucket")),((Number)r.get("total")).longValue()));
+  return new PageResult(rows,page,size,total,(int)Math.ceil((double)total/size),counts);
  }
 
  @GetMapping("/{id}") Map<String,Object> detail(@AuthenticationPrincipal CurrentUser u,@PathVariable UUID id){
