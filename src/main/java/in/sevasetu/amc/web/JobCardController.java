@@ -42,7 +42,8 @@ public class JobCardController {
 
  @PutMapping("/{id}/chefs") @Transactional void assign(@AuthenticationPrincipal CurrentUser u,@PathVariable UUID id,@Valid @RequestBody Assign r){
   CustomerController.tenant(u);editable(u,id); var branch=db.sql("select branch_id from amcservice.job_cards where id=:id and tenant_id=:t").param("id",id).param("t",u.tenantId()).query(UUID.class).optional().orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Job card not found"));
-  for(var employeeId:r.employeeIds())if(db.sql("select count(*) from amcservice.employees where id=:e and tenant_id=:t and branch_id=:b and job_role='CHEF' and active").param("e",employeeId).param("t",u.tenantId()).param("b",branch).query(Integer.class).single()==0)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"A selected chef is unavailable for this branch");
+  var workerRole=db.sql("select case when domain='BAKERY' then 'CHEF' else 'SERVICE' end from amcservice.tenants where id=:t").param("t",u.tenantId()).query(String.class).single();
+  for(var employeeId:r.employeeIds())if(db.sql("select count(*) from amcservice.employees where id=:e and tenant_id=:t and branch_id=:b and job_role=:role and active").param("e",employeeId).param("t",u.tenantId()).param("b",branch).param("role",workerRole).query(Integer.class).single()==0)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"A selected worker is unavailable for this branch");
   db.sql("delete from amcservice.job_card_chefs where job_card_id=:id").param("id",id).update(); for(var employeeId:r.employeeIds())db.sql("insert into amcservice.job_card_chefs(job_card_id,employee_id,assigned_by) values(:j,:e,:u)").param("j",id).param("e",employeeId).param("u",u.userId()).update(); db.sql("update amcservice.job_cards set status=:s,updated_at=now() where id=:id").param("s",r.employeeIds().isEmpty()?"OPEN":"ASSIGNED").param("id",id).update();
  }
 

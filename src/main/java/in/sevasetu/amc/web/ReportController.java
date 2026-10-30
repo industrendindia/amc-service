@@ -10,7 +10,7 @@ import java.util.*;
 
 @RestController
 @RequestMapping("/api/reports")
-@PreAuthorize("hasAnyRole('OWNER','ADMIN')")
+@PreAuthorize("hasAnyRole('OWNER','ADMIN','SALESPERSON')")
 public class ReportController {
  private final JdbcClient db;
  public ReportController(JdbcClient db){this.db=db;}
@@ -53,7 +53,7 @@ public class ReportController {
    join amcservice.branches b on b.id=e.branch_id
    left join amcservice.job_card_chefs jc on jc.employee_id=e.id
    left join amcservice.job_cards j on j.id=jc.job_card_id and j.created_at>=:start and j.created_at<:end
-   where e.tenant_id=:t and e.job_role='CHEF'
+   where e.tenant_id=:t and e.job_role in ('CHEF','SERVICE')
    group by e.id,b.name order by jobs desc,e.name
    """).param("t",u.tenantId()).param("start",selected.start()).param("end",selected.end()).query().listOfRows());
   return result;
