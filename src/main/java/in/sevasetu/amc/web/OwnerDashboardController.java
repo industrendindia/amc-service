@@ -51,14 +51,14 @@ public class OwnerDashboardController {
 
   var salesByDay=new HashMap<LocalDate,BigDecimal>();
   db.sql("""
-    select created_at::date day,coalesce(sum(total),0) sales
+    select cast(created_at as date) as sales_day,coalesce(sum(total),0) as sales
     from amcservice.orders
     where tenant_id=:t and created_at>=:start and created_at<:end
       and fulfillment_status<>'CANCELLED'
     group by created_at::date order by created_at::date
     """).param("t",u.tenantId()).param("start",startAt).param("end",endAt)
     .query().listOfRows().forEach(row->{
-      Object raw=row.get("day");
+      Object raw=row.get("sales_day");
       LocalDate day=raw instanceof LocalDate value?value:((java.sql.Date)raw).toLocalDate();
       salesByDay.put(day,(BigDecimal)row.get("sales"));
     });
