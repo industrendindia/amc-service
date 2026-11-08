@@ -16,7 +16,10 @@ import java.util.*;
 @RestController @RequestMapping("/api/admin/tenants")
 @PreAuthorize("hasAnyRole('ADMIN','SALESPERSON')")
 public class AdminTenantController {
- private static final Set<String> NAV_FEATURES=Set.of("NAV_NEW_ORDER","NAV_BILLS","NAV_JOBS","NAV_GALLERY","NAV_EMPLOYEES","NAV_CATALOG","NAV_REPORTS","NAV_NOTIFICATIONS","NAV_INTEGRATIONS");
+ private static final Set<String> NAV_FEATURES=Set.of(
+  "NAV_NEW_ORDER","NAV_BILLS","NAV_JOBS","NAV_GALLERY","NAV_EMPLOYEES","NAV_CATALOG","NAV_REPORTS","NAV_NOTIFICATIONS","NAV_INTEGRATIONS",
+  "NAV_SALES","NAV_CAKE_CATALOGUE","NAV_MANAGE_CAKES","NAV_CUSTOMERS","NAV_ORDERS_BILLING","NAV_KITCHEN_BOARD","NAV_WHATSAPP_CAMPAIGNS"
+ );
  private final JdbcClient db;private final PasswordEncoder passwords;
  public AdminTenantController(JdbcClient db,PasswordEncoder passwords){this.db=db;this.passwords=passwords;}
  public record BranchInput(UUID id,@NotBlank String code,@NotBlank @Pattern(regexp="[A-Za-z0-9]{1,8}")String documentCode,@NotBlank String name,String address,String phone,Boolean active){}

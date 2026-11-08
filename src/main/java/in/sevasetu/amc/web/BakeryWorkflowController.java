@@ -1,0 +1,36 @@
+package in.sevasetu.amc.web;
+
+import in.sevasetu.amc.security.CurrentUser;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import org.springframework.http.*;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.*;
+import java.util.*;
+
+@RestController @RequestMapping("/api/bakery")
+@PreAuthorize("hasAnyRole('OWNER','ADMIN','SALESPERSON','EMPLOYEE')")
+public class BakeryWorkflowController {
+ private final JdbcClient db; public BakeryWorkflowController(JdbcClient db){this.db=db;}
+ public record CakeRequest(@NotBlank String customerName,@Pattern(regexp="[0-9+ -]{10,16}")String customerPhone,String occasion,Instant requiredAt,@Min(1)Integer servings,String flavour,String preparation,@DecimalMin("0")BigDecimal budget,@NotBlank String designNotes){}
+ public record Campaign(@NotBlank String name,@Pattern(regexp="BIRTHDAY|ANNIVERSARY|MARKETING_CONSENT|ALL_CONSENTED")String audienceType,@Min(0)@Max(90)int eventWindowDays,@NotBlank String message,Instant scheduledFor,boolean queueNow){}
+
+ @PostMapping("/custom-cakes") @ResponseStatus(HttpStatus.CREATED)
+ Map<String,Object> customCake(@AuthenticationPrincipal CurrentUser u,@Valid@RequestBody CakeRequest r){tenant(u);var id=UUID.randomUUID();UUID customer=db.sql("select id from amcservice.customers where tenant_id=:t and phone=:p").param("t",u.tenantId()).param("p",r.customerPhone()).query(UUID.class).optional().orElse(null);db.sql("insert into amcservice.custom_cake_requests(id,tenant_id,branch_id,customer_id,customer_name,customer_phone,occasion,required_at,servings,flavour,preparation,budget,design_notes,created_by) values(:id,:t,:b,:c,:name,:phone,:occasion,:required,:servings,:flavour,:preparation,:budget,:notes,:u)").param("id",id).param("t",u.tenantId()).param("b",u.branchId()).param("c",customer).param("name",r.customerName()).param("phone",r.customerPhone()).param("occasion",r.occasion()).param("required",r.requiredAt()==null?null:Timestamp.from(r.requiredAt())).param("servings",r.servings()).param("flavour",r.flavour()).param("preparation",r.preparation()).param("budget",r.budget()).param("notes",r.designNotes()).param("u",u.userId()).update();return Map.of("id",id,"status","QUOTE_REQUESTED");}
+ @PostMapping(value="/custom-cakes/{id}/reference",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
+ void reference(@AuthenticationPrincipal CurrentUser u,@PathVariable UUID id,@RequestPart("file")MultipartFile file)throws Exception{tenant(u);String type=Optional.ofNullable(file.getContentType()).orElse("");if(file.isEmpty()||file.getSize()>5_000_000||!type.startsWith("image/"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Choose an image up to 5 MB");int changed=db.sql("update amcservice.custom_cake_requests set reference_file_name=:n,reference_content_type=:c,reference_data=:d,updated_at=now() where id=:id and tenant_id=:t").param("n",file.getOriginalFilename()).param("c",type).param("d",file.getBytes()).param("id",id).param("t",u.tenantId()).update();if(changed==0)throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Cake request not found");}
+ @GetMapping("/custom-cakes") List<Map<String,Object>> customCakes(@AuthenticationPrincipal CurrentUser u){tenant(u);return db.sql("select id,customer_name,customer_phone,occasion,required_at,servings,flavour,preparation,budget,design_notes,status,quoted_price,(reference_data is not null) reference_available,created_at from amcservice.custom_cake_requests where tenant_id=:t order by created_at desc limit 100").param("t",u.tenantId()).query().listOfRows();}
+
+ @GetMapping("/campaigns") Map<String,Object> campaigns(@AuthenticationPrincipal CurrentUser u){tenant(u);var result=new LinkedHashMap<String,Object>();result.put("eligible",eligible(u,30));result.put("campaigns",db.sql("select id,name,audience_type,event_window_days,message,scheduled_for,status,audience_count,sent_count,failure_reason,created_at from amcservice.whatsapp_campaigns where tenant_id=:t order by created_at desc limit 50").param("t",u.tenantId()).query().listOfRows());return result;}
+ @PostMapping("/campaigns") @ResponseStatus(HttpStatus.CREATED) Map<String,Object> campaign(@AuthenticationPrincipal CurrentUser u,@Valid@RequestBody Campaign r){tenant(u);int count=audienceCount(u,r.audienceType(),r.eventWindowDays());boolean whatsapp=db.sql("select coalesce((select enabled from amcservice.tenant_feature_entitlements where tenant_id=:t and feature_code='WHATSAPP'),false)").param("t",u.tenantId()).query(Boolean.class).single();String status=r.queueNow()?"QUEUED":"DRAFT";String failure=r.queueNow()&&!whatsapp?"WhatsApp is not configured; campaign saved safely for later delivery.":null;var id=UUID.randomUUID();db.sql("insert into amcservice.whatsapp_campaigns(id,tenant_id,name,audience_type,event_window_days,message,scheduled_for,status,audience_count,failure_reason,created_by) values(:id,:t,:name,:audience,:days,:message,:scheduled,:status,:count,:failure,:u)").param("id",id).param("t",u.tenantId()).param("name",r.name()).param("audience",r.audienceType()).param("days",r.eventWindowDays()).param("message",r.message()).param("scheduled",r.scheduledFor()==null?null:Timestamp.from(r.scheduledFor())).param("status",status).param("count",count).param("failure",failure).param("u",u.userId()).update();return Map.of("id",id,"status",status,"audienceCount",count,"whatsappConfigured",whatsapp);}
+ private List<Map<String,Object>> eligible(CurrentUser u,int days){return db.sql("select id,name,phone,dob,anniversary,marketing_opt_in from amcservice.customers c where tenant_id=:t and marketing_opt_in=true and exists(select 1 from generate_series(current_date,current_date+:days,interval '1 day') d where (c.dob is not null and to_char(c.dob,'MM-DD')=to_char(d,'MM-DD')) or (c.anniversary is not null and to_char(c.anniversary,'MM-DD')=to_char(d,'MM-DD'))) order by name limit 100").param("t",u.tenantId()).param("days",days).query().listOfRows();}
+ private int audienceCount(CurrentUser u,String type,int days){String condition=switch(type){case"BIRTHDAY"->"c.dob is not null and to_char(c.dob,'MM-DD')=to_char(d,'MM-DD')";case"ANNIVERSARY"->"c.anniversary is not null and to_char(c.anniversary,'MM-DD')=to_char(d,'MM-DD')";default->"true";};return db.sql("select count(distinct c.id) from amcservice.customers c left join generate_series(current_date,current_date+:days,interval '1 day') d on true where c.tenant_id=:t and c.marketing_opt_in=true and "+condition).param("t",u.tenantId()).param("days",days).query(Integer.class).single();}
+ private void tenant(CurrentUser u){CustomerController.tenant(u);String domain=db.sql("select domain from amcservice.tenants where id=:t").param("t",u.tenantId()).query(String.class).single();if(!"BAKERY".equals(domain))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"This workspace is available for bakery shops");}
+}
